@@ -41,6 +41,10 @@
 #include "dyld_image_info.h"
 #include "stack_frames_db.h"
 
+#ifdef DEBUG
+#define USE_PRIVATE_API
+#endif
+
 #pragma mark -
 #pragma mark Constants/Globals
 
@@ -202,7 +206,8 @@ void __memory_event_callback(uint32_t type_flags, uintptr_t zone_ptr, uintptr_t 
 
 void __update_object_event(uint64_t address, uint32_t new_type)
 {
-	if (current_thread_id() == working_thread_id || !logging_is_enable) {
+    thread_id curr_thread = current_thread_id();
+	if (curr_thread == working_thread_id || curr_thread == g_matrix_block_monitor_dumping_thread_id || !logging_is_enable) {
 		return;
 	}
 	
@@ -285,13 +290,15 @@ void *__memory_logging_event_writing_thread(void *param)
 				if (curr_event->stack_size > 0) {
 					stack_identifier = add_stack_frames_in_table(stack_frames_writer, curr_event->stacks + curr_event->num_hot_to_skip, curr_event->stack_size - curr_event->num_hot_to_skip); // unique stack in memory
 				} else {
+					log_internal_without_this_thread(0);
+					
 					__malloc_printf("Data corrupted!");
 					
 					//__malloc_lock_unlock(&working_thread_lock);
 					// Restore abort()?
 					//abort();
-					report_error(MS_ERRC_DATA_CORRUPTED);
 					disable_memory_logging();
+					report_error(MS_ERRC_DATA_CORRUPTED);
 					break;
 				}
 				// Try to get vm memory type from type_flags
@@ -518,7 +525,11 @@ void disable_memory_logging(void)
 	
 	disable_object_event_logger();
 	malloc_logger = NULL;
-	*syscall_logger = NULL;
+#ifdef USE_PRIVATE_API
+    if (syscall_logger != NULL) {
+        *syscall_logger = NULL;
+    }
+#endif
 	// avoid that after the memory monitoring stops, there are still some events being written.
 	reset_write_index(event_buffer);
 	// make current logging invalid

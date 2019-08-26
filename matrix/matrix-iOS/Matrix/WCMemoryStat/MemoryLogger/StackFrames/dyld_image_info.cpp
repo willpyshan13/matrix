@@ -31,12 +31,10 @@
 
 #include "dyld_image_info.h"
 #include "logger_internal.h"
+#include "bundle_name_helper.h"
 
 #pragma mark -
 #pragma mark Defines
-
-#define APP_NAME	 "/WeChat.app/WeChat"
-#define APP_BUNDLE	 "/WeChat.app/"
 
 #pragma mark -
 #pragma mark Types
@@ -48,7 +46,7 @@ struct dyld_image_info {
 	uint64_t	vm_end;			/* the end address of this segment */
 	char		uuid[33];		/* the 128-bit uuid */
 	char		image_name[30];	/* name of shared object */
-	bool		is_app_image;	/* whether this image is belong to WeChat APP */
+	bool		is_app_image;	/* whether this image is belong to the APP */
 	
 	dyld_image_info(uint64_t _vs=0, uint64_t _ve=0) : vm_str(_vs), vm_end(_ve) {}
 	
@@ -81,6 +79,9 @@ bool is_ios9_plus = true;
 
 static dyld_image_info app_image_info = {0}; // Infos of all app images including embeded frameworks
 static dyld_image_info mmap_func_info = {0};
+
+static const char *g_app_bundle_name = bundleHelperGetAppBundleName();
+static const char *g_app_name = bundleHelperGetAppName();
 
 #pragma mark -
 #pragma mark DYLD
@@ -119,8 +120,8 @@ static void __add_info_for_image(const struct mach_header *header, intptr_t slid
 	}
 	
 	dyld_image_info image_info = {0};
-	bool is_wechat_image = false;
-	
+	bool is_current_app_image = false;
+    
 	segment_command_t *cur_seg_cmd = NULL;
 	uintptr_t cur = (uintptr_t)header + sizeof(mach_header_t);
 	for (int i = 0; i < header->ncmds; ++i, cur += cur_seg_cmd->cmdsize) {
@@ -142,14 +143,15 @@ static void __add_info_for_image(const struct mach_header *header, intptr_t slid
 
 			Dl_info info = {0};
 			if (dladdr(header, &info) != 0 && info.dli_fname) {
-				if (strlen(info.dli_fname) > strlen(APP_NAME) && !memcmp(info.dli_fname + strlen(info.dli_fname) - strlen(APP_NAME), APP_NAME, strlen(APP_NAME))) {
-					is_wechat_image = true;
+				if (strlen(info.dli_fname) > strlen(g_app_name) && !memcmp(info.dli_fname + strlen(info.dli_fname) - strlen(g_app_name), g_app_name, strlen(g_app_name))) {
+                    is_current_app_image = true;
 				}
 				if (strrchr(info.dli_fname, '/') != NULL) {
 					strncpy(image_info.image_name, strrchr(info.dli_fname, '/'), sizeof(image_info.image_name));
 				}
-				
-				image_info.is_app_image = (strstr(info.dli_fname, APP_BUNDLE) != NULL);
+        
+				image_info.is_app_image = (strstr(info.dli_fname, g_app_bundle_name) != NULL);
+
 			}
 		}
 	}
@@ -173,7 +175,7 @@ static void __add_info_for_image(const struct mach_header *header, intptr_t slid
 	if (image_info.is_app_image) {
 		app_image_info.vm_str = (app_image_info.vm_str == 0 ? image_info.vm_str : MIN(app_image_info.vm_str, image_info.vm_str));
 		app_image_info.vm_end = (app_image_info.vm_end == 0 ? image_info.vm_end : MAX(app_image_info.vm_end, image_info.vm_end));
-		if (is_wechat_image) {
+		if (is_current_app_image) {
 			memcpy(app_image_info.uuid, image_info.uuid, sizeof(image_info.uuid));
 		}
 	}

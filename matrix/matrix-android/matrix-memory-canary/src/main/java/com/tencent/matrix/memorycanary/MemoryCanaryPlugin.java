@@ -25,7 +25,7 @@ import com.tencent.matrix.plugin.Plugin;
 import com.tencent.matrix.plugin.PluginListener;
 import com.tencent.matrix.util.MatrixLog;
 
-import java.util.HashSet;
+import org.json.JSONObject;
 
 /**
  * @author zhouzhijie
@@ -50,13 +50,6 @@ public class MemoryCanaryPlugin extends Plugin {
     public void init(Application app, PluginListener listener) {
         super.init(app, listener);
         mCore = new MemoryCanaryCore(this);
-        HashSet<String> specialActivities = mMemoryConfig.getSpecialActivities();
-        if (specialActivities != null) {
-            for (String activity : specialActivities) {
-                mCore.addSpecial(activity);
-            }
-        }
-
     }
 
     @Override
@@ -94,6 +87,10 @@ public class MemoryCanaryPlugin extends Plugin {
         MatrixLog.i(TAG, "onForeground:" + isForground);
 
         super.onForeground(isForground);
-        mCore.onForeground(isForground);
+    }
+
+    @Override
+    public JSONObject getJsonInfo() {
+        return mCore.getJsonInfo();
     }
 }
