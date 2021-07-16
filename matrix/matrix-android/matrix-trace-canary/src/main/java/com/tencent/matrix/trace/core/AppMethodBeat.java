@@ -134,6 +134,12 @@ public class AppMethodBeat implements BeatLifecycle {
         }
     }
 
+    public void forceStop() {
+        synchronized (statusLock) {
+            status = STATUS_STOPPED;
+        }
+    }
+
     @Override
     public boolean isAlive() {
         return status >= STATUS_STARTED;
@@ -263,6 +269,8 @@ public class AppMethodBeat implements BeatLifecycle {
 
     /**
      * when the special method calls,it's will be called.
+     *
+     * called after {@link #i(int)}
      *
      * @param activity now at which activity
      * @param isFocus  this window if has focus

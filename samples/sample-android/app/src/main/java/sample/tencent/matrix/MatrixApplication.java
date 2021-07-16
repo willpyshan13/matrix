@@ -21,6 +21,7 @@ import android.content.Context;
 import android.content.Intent;
 
 import com.tencent.matrix.Matrix;
+import com.tencent.matrix.batterycanary.BatteryMonitorPlugin;
 import com.tencent.matrix.iocanary.IOCanaryPlugin;
 import com.tencent.matrix.iocanary.config.IOConfig;
 import com.tencent.matrix.resource.ResourcePlugin;
@@ -32,8 +33,10 @@ import com.tencent.sqlitelint.SQLiteLint;
 import com.tencent.sqlitelint.SQLiteLintPlugin;
 import com.tencent.sqlitelint.config.SQLiteLintConfig;
 
+import sample.tencent.matrix.battery.BatteryCanaryInitHelper;
 import sample.tencent.matrix.config.DynamicConfigImplDemo;
 import sample.tencent.matrix.listener.TestPluginListener;
+import sample.tencent.matrix.resource.ManualDumpActivity;
 import sample.tencent.matrix.sqlitelint.TestSQLiteLintActivity;
 
 /**
@@ -92,14 +95,15 @@ public class MatrixApplication extends Application {
 
             //resource
             Intent intent = new Intent();
-            ResourceConfig.DumpMode mode = ResourceConfig.DumpMode.AUTO_DUMP;
+            ResourceConfig.DumpMode mode = ResourceConfig.DumpMode.MANUAL_DUMP;
             MatrixLog.i(TAG, "Dump Activity Leak Mode=%s", mode);
             intent.setClassName(this.getPackageName(), "com.tencent.mm.ui.matrix.ManualDumpActivity");
             ResourceConfig resourceConfig = new ResourceConfig.Builder()
                     .dynamicConfig(dynamicConfig)
                     .setAutoDumpHprofMode(mode)
 //                .setDetectDebuger(true) //matrix test code
-                    .setNotificationContentIntent(intent)
+//                    .set(intent)
+                    .setManualDumpTargetActivity(ManualDumpActivity.class.getName())
                     .build();
             builder.plugin(new ResourcePlugin(resourceConfig));
             ResourcePlugin.activityLeakFixer(this);
@@ -121,12 +125,17 @@ public class MatrixApplication extends Application {
             }
             builder.plugin(new SQLiteLintPlugin(sqlLiteConfig));
 
+            BatteryMonitorPlugin batteryMonitorPlugin = BatteryCanaryInitHelper.createMonitor();
+            builder.plugin(batteryMonitorPlugin);
         }
 
         Matrix.init(builder.build());
 
         //start only startup tracer, close other tracer.
         tracePlugin.start();
+//        Matrix.with().getPluginByClass(BatteryMonitor.class).start();
+        MatrixLog.i("Matrix.HackCallback", "end:%s", System.currentTimeMillis());
+
 
     }
 

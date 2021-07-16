@@ -11,6 +11,7 @@
 /gradle/oss-android-template.gradle
 build_macos
 build_ios
+reports
 
 ## compatibility with Xcode 8 and earlier (ignoring not required starting Xcode 9)
 *.xcscmblueprint
@@ -29,3 +30,47 @@ DerivedData/
 *.perspectivev3
 !default.perspectivev3
 xcuserdata/
+=======
+#
+# Buck generated
+#
+buck_gen/
+**/buck-out
+**/buck-cache
+**/.buckd
+**/BUCK
+**/sim_*
+
+#
+# Visual Studio Code
+#
+**/.vscode
+
+#
+# Eclipse
+#
+**/.settings
+**/.externalToolBuilders
+
+#
+# IntelliJ IDEA
+#
+**/.idea/
+*.iws
+*.ipr
+*.iml
+
+#
+# and Android Studio
+#
+build/
+**/build/
+.gradle/
+**/local.properties
+reports/
+captures/
+
+**/gen
+**/bin
+**/classes
+*.apk

@@ -17,12 +17,12 @@
 #import <malloc/malloc.h>
 #import <mach/vm_statistics.h>
 
+#include "memory_report_generator.h"
 #include "memory_stat_err_code.h"
 
-void flush_last_data(const char *log_dir);
+extern int dump_call_stacks;
 
 int enable_memory_logging(const char *log_dir);
 void disable_memory_logging(void);
 
-uint32_t get_current_thread_memory_usage();
-
+bool memory_dump(void (*callback)(const char *, size_t), summary_report_param param);

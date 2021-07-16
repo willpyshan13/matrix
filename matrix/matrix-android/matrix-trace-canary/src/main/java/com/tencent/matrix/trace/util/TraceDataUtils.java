@@ -69,7 +69,8 @@ public class TraceDataUtils {
                         tmp.add(in);
                     }
 
-                    if (inMethodId != outMethodId && inMethodId == AppMethodBeat.METHOD_ID_DISPATCH) {
+                    if (inMethodId != outMethodId
+                            && inMethodId == AppMethodBeat.METHOD_ID_DISPATCH) {
                         MatrixLog.e(TAG, "inMethodId[%s] != outMethodId[%s] throw this outMethodId!", inMethodId, outMethodId);
                         rawData.addAll(tmp);
                         depth += rawData.size();
@@ -104,11 +105,13 @@ public class TraceDataUtils {
                 MatrixLog.e(TAG, "[structuredDataToStack] why has out Method[%s]? is wrong! ", methodId);
                 continue;
             }
-            MethodItem methodItem = new MethodItem(methodId, (int) (endTime - inTime), rawData.size());
+            MethodItem methodItem = new MethodItem(methodId, (int) (endTime
+                    - inTime), rawData.size());
             addMethodItem(result, methodItem);
         }
         TreeNode root = new TreeNode(null, null);
-        stackToTree(result, root);
+        int count = stackToTree(result, root);
+        MatrixLog.i(TAG, "stackToTree: count=%s", count);
         result.clear();
         treeToStack(root, result);
     }
@@ -133,7 +136,8 @@ public class TraceDataUtils {
         if (!resultStack.isEmpty()) {
             last = resultStack.peek();
         }
-        if (null != last && last.methodId == item.methodId && last.depth == item.depth && 0 != item.depth) {
+        if (null != last && last.methodId == item.methodId && last.depth == item.depth
+                && 0 != item.depth) {
             item.durTime = item.durTime == Constants.DEFAULT_ANR ? last.durTime : item.durTime;
             last.mergeMore(item.durTime);
             return last.durTime;
@@ -143,23 +147,12 @@ public class TraceDataUtils {
         }
     }
 
-    private static void rechange(TreeNode root) {
-        if (root.children.isEmpty()) {
-            return;
-        }
-        TreeNode[] nodes = new TreeNode[root.children.size()];
-        root.children.toArray(nodes);
-        root.children.clear();
-        for (TreeNode node : nodes) {
-            root.children.addFirst(node);
-            rechange(node);
-        }
-    }
 
     private static void treeToStack(TreeNode root, LinkedList<MethodItem> list) {
 
         for (int i = 0; i < root.children.size(); i++) {
             TreeNode node = root.children.get(i);
+            if (null == node) continue;
             if (node.item != null) {
                 list.add(node.item);
             }
@@ -368,7 +361,8 @@ public class TraceDataUtils {
         if (sortList.isEmpty() && !stack.isEmpty()) {
             MethodItem root = stack.get(0);
             sortList.add(root);
-        } else if (sortList.size() > 1 && sortList.peek().methodId == AppMethodBeat.METHOD_ID_DISPATCH) {
+        } else if (sortList.size() > 1
+                && sortList.peek().methodId == AppMethodBeat.METHOD_ID_DISPATCH) {
             sortList.removeFirst();
         }
 

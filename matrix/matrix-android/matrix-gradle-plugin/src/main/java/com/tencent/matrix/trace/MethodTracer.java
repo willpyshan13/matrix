@@ -46,6 +46,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.zip.ZipEntry;
+import java.util.zip.ZipException;
 import java.util.zip.ZipFile;
 import java.util.zip.ZipOutputStream;
 
@@ -194,9 +195,16 @@ public class MethodTracer {
                 }
             }
         } catch (Exception e) {
-            Log.e(TAG, "[innerTraceMethodFromJar] input:%s output:%s e:%s", input.getName(), output, e);
+            Log.e(TAG, "[innerTraceMethodFromJar] input:%s output:%s e:%s", input, output, e);
+            if (e instanceof ZipException) {
+                e.printStackTrace();
+            }
             try {
-                Files.copy(input.toPath(), output.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                if (input.length() > 0) {
+                    Files.copy(input.toPath(), output.toPath(), StandardCopyOption.REPLACE_EXISTING);
+                } else {
+                    Log.e(TAG, "[innerTraceMethodFromJar] input:%s is empty", input);
+                }
             } catch (Exception e1) {
                 e1.printStackTrace();
             }
@@ -264,12 +272,12 @@ public class MethodTracer {
         @Override
         public MethodVisitor visitMethod(int access, String name, String desc,
                                          String signature, String[] exceptions) {
+            if (!hasWindowFocusMethod) {
+                hasWindowFocusMethod = MethodCollector.isWindowFocusChangeMethod(name, desc);
+            }
             if (isABSClass) {
                 return super.visitMethod(access, name, desc, signature, exceptions);
             } else {
-                if (!hasWindowFocusMethod) {
-                    hasWindowFocusMethod = MethodCollector.isWindowFocusChangeMethod(name, desc);
-                }
                 MethodVisitor methodVisitor = cv.visitMethod(access, name, desc, signature, exceptions);
                 return new TraceMethodAdapter(api, methodVisitor, access, name, desc, this.className,
                         hasWindowFocusMethod, isActivityOrSubClass, isNeedTrace);
@@ -315,6 +323,10 @@ public class MethodTracer {
                 traceMethodCount.incrementAndGet();
                 mv.visitLdcInsn(traceMethod.id);
                 mv.visitMethodInsn(INVOKESTATIC, TraceBuildConstants.MATRIX_TRACE_CLASS, "i", "(I)V", false);
+
+                if (checkNeedTraceWindowFocusChangeMethod(traceMethod)) {
+                    traceWindowFocusChangeMethod(mv, className);
+                }
             }
         }
 
@@ -340,18 +352,21 @@ public class MethodTracer {
         protected void onMethodExit(int opcode) {
             TraceMethod traceMethod = collectedMethodMap.get(methodName);
             if (traceMethod != null) {
-                if (hasWindowFocusMethod && isActivityOrSubClass && isNeedTrace) {
-                    TraceMethod windowFocusChangeMethod = TraceMethod.create(-1, Opcodes.ACC_PUBLIC, className,
-                            TraceBuildConstants.MATRIX_TRACE_ON_WINDOW_FOCUS_METHOD, TraceBuildConstants.MATRIX_TRACE_ON_WINDOW_FOCUS_METHOD_ARGS);
-                    if (windowFocusChangeMethod.equals(traceMethod)) {
-                        traceWindowFocusChangeMethod(mv, className);
-                    }
-                }
-
                 traceMethodCount.incrementAndGet();
                 mv.visitLdcInsn(traceMethod.id);
                 mv.visitMethodInsn(INVOKESTATIC, TraceBuildConstants.MATRIX_TRACE_CLASS, "o", "(I)V", false);
             }
+        }
+
+        private boolean checkNeedTraceWindowFocusChangeMethod(TraceMethod traceMethod) {
+            if (hasWindowFocusMethod && isActivityOrSubClass && isNeedTrace) {
+                TraceMethod windowFocusChangeMethod = TraceMethod.create(-1, Opcodes.ACC_PUBLIC, className,
+                        TraceBuildConstants.MATRIX_TRACE_ON_WINDOW_FOCUS_METHOD, TraceBuildConstants.MATRIX_TRACE_ON_WINDOW_FOCUS_METHOD_ARGS);
+                if (windowFocusChangeMethod.equals(traceMethod)) {
+                    return true;
+                }
+            }
+            return false;
         }
     }
 
@@ -359,7 +374,8 @@ public class MethodTracer {
         className = className.replace(".", "/");
         boolean isActivity = className.equals(TraceBuildConstants.MATRIX_TRACE_ACTIVITY_CLASS)
                 || className.equals(TraceBuildConstants.MATRIX_TRACE_V4_ACTIVITY_CLASS)
-                || className.equals(TraceBuildConstants.MATRIX_TRACE_V7_ACTIVITY_CLASS);
+                || className.equals(TraceBuildConstants.MATRIX_TRACE_V7_ACTIVITY_CLASS)
+                || className.equals(TraceBuildConstants.MATRIX_TRACE_ANDROIDX_ACTIVITY_CLASS);
         if (isActivity) {
             return true;
         } else {

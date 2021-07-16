@@ -76,7 +76,7 @@ public class MatrixHandlerThread {
     }
 
     public static HandlerThread getNewHandlerThread(String name, int priority) {
-        for (Iterator<HandlerThread> i = handlerThreads.iterator(); i.hasNext();) {
+        for (Iterator<HandlerThread> i = handlerThreads.iterator(); i.hasNext(); ) {
             HandlerThread element = i.next();
             if (!element.isAlive()) {
                 i.remove();
@@ -142,7 +142,8 @@ public class MatrixHandlerThread {
                 });
                 hashMap.clear();
                 if (!list.isEmpty()) {
-                    MatrixLog.i(TAG, "matrix default thread has exec in background! %s cost:%s", list, System.currentTimeMillis() - start);
+                    MatrixLog.i(TAG, "matrix default thread has exec in background! %s cost:%s", list,
+                            System.currentTimeMillis() - start);
                 }
             } else {
                 hashMap.clear();

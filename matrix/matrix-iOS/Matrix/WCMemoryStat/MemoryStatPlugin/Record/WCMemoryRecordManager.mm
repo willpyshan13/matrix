@@ -17,6 +17,7 @@
 #import "WCMemoryRecordManager.h"
 #import "MatrixPathUtil.h"
 #import "MatrixLogDef.h"
+#import "dyld_image_info.h"
 
 @interface WCMemoryRecordManager () {
     NSMutableArray *m_recordList;
@@ -27,8 +28,7 @@
 
 @implementation WCMemoryRecordManager
 
-- (id)init
-{
+- (id)init {
     self = [super init];
     if (self) {
         [self loadRecordList];
@@ -36,9 +36,9 @@
     return self;
 }
 
-- (NSArray *)recordList
-{
+- (NSArray *)recordList {
     if (m_recordList.count > 0) {
+        [self sortRecordList];
         // Filter the record of this startup
         NSMutableArray *retList = [NSMutableArray arrayWithArray:m_recordList];
         [retList removeObject:m_currRecord];
@@ -48,8 +48,7 @@
     }
 }
 
-- (MemoryRecordInfo *)getRecordByLaunchTime:(uint64_t)launchTime
-{
+- (MemoryRecordInfo *)getRecordByLaunchTime:(uint64_t)launchTime {
     for (MemoryRecordInfo *record in m_recordList) {
         if (record.launchTime == launchTime) {
             return record;
@@ -58,15 +57,13 @@
     return nil;
 }
 
-- (void)insertNewRecord:(MemoryRecordInfo *)record
-{
+- (void)insertNewRecord:(MemoryRecordInfo *)record {
     m_currRecord = record;
     [m_recordList addObject:record];
     [self saveRecordList];
 }
 
-- (void)updateRecord:(MemoryRecordInfo *)record
-{
+- (void)updateRecord:(MemoryRecordInfo *)record {
     for (int i = 0; i < m_recordList.count; ++i) {
         MemoryRecordInfo *tmpRecord = m_recordList[i];
         if (record.launchTime == tmpRecord.launchTime) {
@@ -77,8 +74,7 @@
     }
 }
 
-- (void)deleteRecord:(MemoryRecordInfo *)record
-{
+- (void)deleteRecord:(MemoryRecordInfo *)record {
     for (int i = 0; i < m_recordList.count; ++i) {
         MemoryRecordInfo *tmpRecord = m_recordList[i];
         if (record.launchTime == tmpRecord.launchTime) {
@@ -92,8 +88,7 @@
     }
 }
 
-- (void)deleteAllRecords
-{
+- (void)deleteAllRecords {
     for (int i = 0; i < m_recordList.count; ++i) {
         MemoryRecordInfo *record = m_recordList[i];
         NSString *eventPath = [record recordDataPath];
@@ -104,8 +99,22 @@
     [self saveRecordList];
 }
 
-- (void)loadRecordList
-{
+- (void)sortRecordList {
+    NSArray *sortedList = [m_recordList sortedArrayUsingComparator:^NSComparisonResult(id _Nonnull obj1, id _Nonnull obj2) {
+        MemoryRecordInfo *info1 = (MemoryRecordInfo *)obj1;
+        MemoryRecordInfo *info2 = (MemoryRecordInfo *)obj2;
+
+        if (info1.launchTime < info2.launchTime) {
+            return NSOrderedDescending;
+        } else {
+            return NSOrderedAscending;
+        }
+    }];
+
+    m_recordList = [NSMutableArray arrayWithArray:sortedList];
+}
+
+- (void)loadRecordList {
     @try {
         m_recordList = [NSKeyedUnarchiver unarchiveObjectWithFile:[self recordListPath]];
         if ([m_recordList isKindOfClass:[NSArray class]] == NO) {
@@ -121,20 +130,40 @@
         }
     }
 
-    // just limit 3 record
-    if (m_recordList.count > 3) {
-        while (m_recordList.count > 3) {
-            MemoryRecordInfo *record = m_recordList[0];
-            [m_recordList removeObjectAtIndex:0];
+    // delete records whose 'appUUID' not equal to curr uuid
+    NSString *appUUID = @(app_uuid());
+    NSMutableArray *removed = [NSMutableArray array];
+    for (int i = 0; i < m_recordList.count; ++i) {
+        MemoryRecordInfo *record = m_recordList[i];
+        if (appUUID && [appUUID isEqualToString:record.appUUID] == NO) {
+            NSString *eventPath = [record recordDataPath];
+            [[NSFileManager defaultManager] removeItemAtPath:eventPath error:NULL];
+            [removed addObject:record];
+        }
+    }
+    if (removed.count > 0) {
+        [m_recordList removeObjectsInArray:removed];
+        [self saveRecordList];
+    }
+
+#define RECORD_MAX_COUNT 2
+
+    // just limit N record
+    if (m_recordList.count > RECORD_MAX_COUNT) {
+        [self sortRecordList];
+
+        for (int i = RECORD_MAX_COUNT; i < m_recordList.count; ++i) {
+            MemoryRecordInfo *record = m_recordList[i];
             NSString *eventPath = [record recordDataPath];
             [[NSFileManager defaultManager] removeItemAtPath:eventPath error:NULL];
         }
+        [m_recordList removeObjectsInRange:NSMakeRange(RECORD_MAX_COUNT, m_recordList.count - RECORD_MAX_COUNT)];
+
         [self saveRecordList];
     }
 }
 
-- (void)saveRecordList
-{
+- (void)saveRecordList {
     @try {
         [NSKeyedArchiver archiveRootObject:m_recordList toFile:[self recordListPath]];
     } @catch (NSException *exception) {
@@ -142,8 +171,7 @@
     }
 }
 
-- (NSString *)recordListPath
-{
+- (NSString *)recordListPath {
     NSString *pathComponent = @"RecordList.dat";
     return [[MatrixPathUtil memoryStatPluginCachePath] stringByAppendingPathComponent:pathComponent];
 }
