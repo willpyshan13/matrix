@@ -41,6 +41,7 @@ public enum MatrixEnum {
     clicfg_matrix_fps_dropped_high,
     clicfg_matrix_fps_dropped_frozen,
     clicfg_matrix_trace_evil_method_enable,
+    clicfg_matrix_trace_startup_enable,
 
     clicfg_matrix_trace_app_start_up_threshold,
     clicfg_matrix_trace_fps_frame_fresh_threshold,
@@ -63,6 +64,7 @@ public enum MatrixEnum {
     clicfg_matrix_resource_detect_interval_millis,
     clicfg_matrix_resource_max_detect_times,
     clicfg_matrix_resource_dump_hprof_enable,
+
 
     /******matrix end*******/
 }

@@ -18,8 +18,10 @@ package sample.tencent.matrix;
 
 import android.app.Application;
 import android.content.Context;
+import android.content.Intent;
 
 import com.tencent.matrix.Matrix;
+import com.tencent.matrix.batterycanary.BatteryMonitorPlugin;
 import com.tencent.matrix.iocanary.IOCanaryPlugin;
 import com.tencent.matrix.iocanary.config.IOConfig;
 import com.tencent.matrix.resource.ResourcePlugin;
@@ -31,8 +33,11 @@ import com.tencent.sqlitelint.SQLiteLint;
 import com.tencent.sqlitelint.SQLiteLintPlugin;
 import com.tencent.sqlitelint.config.SQLiteLintConfig;
 
+import sample.tencent.matrix.battery.BatteryCanaryInitHelper;
 import sample.tencent.matrix.config.DynamicConfigImplDemo;
 import sample.tencent.matrix.listener.TestPluginListener;
+import sample.tencent.matrix.resource.ManualDumpActivity;
+import sample.tencent.matrix.sqlitelint.TestSQLiteLintActivity;
 
 /**
  * Created by caichongyang on 17/5/18.
@@ -45,9 +50,15 @@ public class MatrixApplication extends Application {
 
     private static SQLiteLintConfig initSQLiteLintConfig() {
         try {
-            return new SQLiteLintConfig(SQLiteLint.SqlExecutionCallbackMode.CUSTOM_NOTIFY);
+            /**
+             * HOOK模式下，SQLiteLint会自己去获取所有已执行的sql语句及其耗时(by hooking sqlite3_profile)
+             * @see 而另一个模式：SQLiteLint.SqlExecutionCallbackMode.CUSTOM_NOTIFY , 则需要调用 {@link SQLiteLint#notifySqlExecution(String, String, int)}来通知
+             * SQLiteLint 需要分析的、已执行的sql语句及其耗时
+             * @see TestSQLiteLintActivity#doTest()
+             */
+            return new SQLiteLintConfig(SQLiteLint.SqlExecutionCallbackMode.HOOK);
         } catch (Throwable t) {
-            return new SQLiteLintConfig(SQLiteLint.SqlExecutionCallbackMode.CUSTOM_NOTIFY);
+            return new SQLiteLintConfig(SQLiteLint.SqlExecutionCallbackMode.HOOK);
         }
     }
 
@@ -69,9 +80,12 @@ public class MatrixApplication extends Application {
         TraceConfig traceConfig = new TraceConfig.Builder()
                 .dynamicConfig(dynamicConfig)
                 .enableFPS(fpsEnable)
-                .enableMethodTrace(traceEnable)
-                .enableStartUp(traceEnable)
-                .splashActivity("sample.tencent.matrix.SplashActivity")
+                .enableEvilMethodTrace(traceEnable)
+                .enableAnrTrace(traceEnable)
+                .enableStartup(traceEnable)
+                .splashActivities("sample.tencent.matrix.SplashActivity;")
+                .isDebug(true)
+                .isDevEnv(false)
                 .build();
 
         TracePlugin tracePlugin = (new TracePlugin(traceConfig));
@@ -80,11 +94,18 @@ public class MatrixApplication extends Application {
         if (matrixEnable) {
 
             //resource
-            builder.plugin(new ResourcePlugin(new ResourceConfig.Builder()
+            Intent intent = new Intent();
+            ResourceConfig.DumpMode mode = ResourceConfig.DumpMode.MANUAL_DUMP;
+            MatrixLog.i(TAG, "Dump Activity Leak Mode=%s", mode);
+            intent.setClassName(this.getPackageName(), "com.tencent.mm.ui.matrix.ManualDumpActivity");
+            ResourceConfig resourceConfig = new ResourceConfig.Builder()
                     .dynamicConfig(dynamicConfig)
-                    .setDumpHprof(false)
-                    .setDetectDebuger(true)     //only set true when in sample, not in your app
-                    .build()));
+                    .setAutoDumpHprofMode(mode)
+//                .setDetectDebuger(true) //matrix test code
+//                    .set(intent)
+                    .setManualDumpTargetActivity(ManualDumpActivity.class.getName())
+                    .build();
+            builder.plugin(new ResourcePlugin(resourceConfig));
             ResourcePlugin.activityLeakFixer(this);
 
             //io
@@ -96,21 +117,27 @@ public class MatrixApplication extends Application {
 
             // prevent api 19 UnsatisfiedLinkError
             //sqlite
-            SQLiteLintConfig config = initSQLiteLintConfig();
-            SQLiteLintPlugin sqLiteLintPlugin = new SQLiteLintPlugin(config);
-            builder.plugin(sqLiteLintPlugin);
+            SQLiteLintConfig sqlLiteConfig;
+            try {
+                sqlLiteConfig = new SQLiteLintConfig(SQLiteLint.SqlExecutionCallbackMode.CUSTOM_NOTIFY);
+            } catch (Throwable t) {
+                sqlLiteConfig = new SQLiteLintConfig(SQLiteLint.SqlExecutionCallbackMode.CUSTOM_NOTIFY);
+            }
+            builder.plugin(new SQLiteLintPlugin(sqlLiteConfig));
+
+            BatteryMonitorPlugin batteryMonitorPlugin = BatteryCanaryInitHelper.createMonitor();
+            builder.plugin(batteryMonitorPlugin);
         }
 
         Matrix.init(builder.build());
 
         //start only startup tracer, close other tracer.
         tracePlugin.start();
-        //only stop at sample app, in your app do not call onDestroy
-        tracePlugin.getFPSTracer().onDestroy();
-
+//        Matrix.with().getPluginByClass(BatteryMonitor.class).start();
         MatrixLog.i("Matrix.HackCallback", "end:%s", System.currentTimeMillis());
-    }
 
+
+    }
 
     public static Context getContext() {
         return sContext;

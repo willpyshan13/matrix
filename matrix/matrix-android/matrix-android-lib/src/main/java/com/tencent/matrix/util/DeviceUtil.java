@@ -19,7 +19,6 @@ package com.tencent.matrix.util;
 import android.app.ActivityManager;
 import android.app.Application;
 import android.content.Context;
-//import android.content.pm.ApplicationInfo;
 import android.os.Build;
 import android.os.Debug;
 
@@ -34,6 +33,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.RandomAccessFile;
+import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
@@ -79,7 +79,7 @@ public class DeviceUtil {
             oldObj.put(DEVICE_MACHINE, getLevel(context));
             oldObj.put(DEVICE_CPU, getAppCpuRate());
             oldObj.put(DEVICE_MEMORY, getTotalMemory(context));
-            oldObj.put(DEVICE_MEMORY_FREE, getMemFree());
+            oldObj.put(DEVICE_MEMORY_FREE, getMemFree(context));
 
         } catch (JSONException e) {
             MatrixLog.e(TAG, "[JSONException for stack, error: %s", e);
@@ -96,19 +96,13 @@ public class DeviceUtil {
         long totalMemory = getTotalMemory(context);
         int coresNum = getNumOfCores();
         MatrixLog.i(TAG, "[getLevel] totalMemory:%s coresNum:%s", totalMemory, coresNum);
-        if (totalMemory >= 4 * 1024 * MB) {
+        if (totalMemory >= 8 * 1024 * MB) {
             sLevelCache = LEVEL.BEST;
-        } else if (totalMemory >= 3 * 1024 * MB) {
+        } else if (totalMemory >= 6 * 1024 * MB) {
             sLevelCache = LEVEL.HIGH;
+        } else if (totalMemory >= 4 * 1024 * MB) {
+            sLevelCache = LEVEL.MIDDLE;
         } else if (totalMemory >= 2 * 1024 * MB) {
-            if (coresNum >= 4) {
-                sLevelCache = LEVEL.HIGH;
-            } else if (coresNum >= 2) {
-                sLevelCache = LEVEL.MIDDLE;
-            } else if (coresNum > 0) {
-                sLevelCache = LEVEL.LOW;
-            }
-        } else if (totalMemory >= 1024 * MB) {
             if (coresNum >= 4) {
                 sLevelCache = LEVEL.MIDDLE;
             } else if (coresNum >= 2) {
@@ -190,6 +184,11 @@ public class DeviceUtil {
 
     //return in KB
     public static long getAvailMemory(Context context) {
+        Runtime runtime = Runtime.getRuntime();
+        return runtime.freeMemory() / 1024;   //in KB
+    }
+
+    public static long getMemFree(Context context) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
             ActivityManager.MemoryInfo memInfo = new ActivityManager.MemoryInfo();
             ActivityManager am = (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
@@ -203,7 +202,7 @@ public class DeviceUtil {
                 String line = bufferedReader.readLine();
                 while (null != line) {
                     String[] args = line.split("\\s+");
-                    if ("MemFree:".equals(args[0])) {
+                    if ("MemAvailable:".equals(args[0])) {
                         availMemory = Integer.parseInt(args[1]) * 1024L;
                         break;
                     } else {
@@ -224,36 +223,6 @@ public class DeviceUtil {
             }
             return availMemory / 1024;
         }
-    }
-
-    public static long getMemFree() {
-        long availMemory = INVALID;
-        BufferedReader bufferedReader = null;
-        try {
-            bufferedReader = new BufferedReader(new InputStreamReader(new FileInputStream(MEMORY_FILE_PATH), "UTF-8"));
-            String line = bufferedReader.readLine();
-            while (null != line) {
-                String[] args = line.split("\\s+");
-                if ("MemFree:".equals(args[0])) {
-                    availMemory = Integer.parseInt(args[1]) * 1024L;
-                    break;
-                } else {
-                    line = bufferedReader.readLine();
-                }
-            }
-
-        } catch (Exception e) {
-            MatrixLog.i(TAG, "[getAvailMemory] error! %s", e.toString());
-        } finally {
-            try {
-                if (null != bufferedReader) {
-                    bufferedReader.close();
-                }
-            } catch (Exception e) {
-                MatrixLog.i(TAG, "close reader %s", e.toString());
-            }
-        }
-        return availMemory / 1024;
     }
 
     public static double getAppCpuRate() {
@@ -399,9 +368,21 @@ public class DeviceUtil {
         try {
             String content = getStringFromFile(status).trim();
             String[] args = content.split("\n");
+            for (String str : args) {
+                if (str.startsWith("VmSize")) {
+                    Pattern p = Pattern.compile("\\d+");
+                    Matcher matcher = p.matcher(str);
+                    if (matcher.find()) {
+                        return Long.parseLong(matcher.group());
+                    }
+                }
+            }
             if (args.length > 12) {
-                String size = args[12].split(":")[1].trim();
-                return Long.parseLong(size.split(" ")[0]) * 1024L;
+                Pattern p = Pattern.compile("\\d+");
+                Matcher matcher = p.matcher(args[12]);
+                if (matcher.find()) {
+                    return Long.parseLong(matcher.group());
+                }
             }
         } catch (Exception e) {
             return -1;
@@ -409,12 +390,12 @@ public class DeviceUtil {
         return -1;
     }
 
-    protected static String convertStreamToString(InputStream is) throws Exception {
+    public static String convertStreamToString(InputStream is) throws Exception {
         BufferedReader reader = null;
         StringBuilder sb = new StringBuilder();
         try {
-            reader = new BufferedReader(new InputStreamReader(is));
-            String line = null;
+            reader = new BufferedReader(new InputStreamReader(is, "UTF-8"));
+            String line;
             while ((line = reader.readLine()) != null) {
                 sb.append(line).append('\n');
             }
@@ -427,7 +408,7 @@ public class DeviceUtil {
         return sb.toString();
     }
 
-    protected static String getStringFromFile(String filePath) throws Exception {
+    public static String getStringFromFile(String filePath) throws Exception {
         File fl = new File(filePath);
         FileInputStream fin = null;
         String ret;
@@ -440,6 +421,19 @@ public class DeviceUtil {
             }
         }
         return ret;
+    }
+
+    /**
+     * Check if current runtime is 64bit.
+     *
+     * @return
+     *   True if current runtime is 64bit abi. Otherwise return false instead.
+     */
+    public static boolean is64BitRuntime() {
+        final String currRuntimeABI = Build.CPU_ABI;
+        return "arm64-v8a".equalsIgnoreCase(currRuntimeABI)
+                || "x86_64".equalsIgnoreCase(currRuntimeABI)
+                || "mips64".equalsIgnoreCase(currRuntimeABI);
     }
 
 }

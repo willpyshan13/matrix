@@ -17,32 +17,28 @@ package com.tencent.matrix.resource.watcher;
 
 import android.app.Activity;
 import android.app.Application;
-import android.content.Context;
-import android.os.Bundle;
 import android.os.Debug;
+import android.os.Handler;
 import android.os.HandlerThread;
 
 import com.tencent.matrix.report.FilePublisher;
-import com.tencent.matrix.report.Issue;
-import com.tencent.matrix.resource.CanaryWorkerService;
 import com.tencent.matrix.resource.ResourcePlugin;
 import com.tencent.matrix.resource.analyzer.model.DestroyedActivityInfo;
-import com.tencent.matrix.resource.analyzer.model.HeapDump;
 import com.tencent.matrix.resource.config.ResourceConfig;
-import com.tencent.matrix.resource.config.SharePluginInfo;
+import com.tencent.matrix.resource.processor.AutoDumpProcessor;
+import com.tencent.matrix.resource.processor.BaseLeakProcessor;
+import com.tencent.matrix.resource.processor.ManualDumpProcessor;
+import com.tencent.matrix.resource.processor.NoDumpProcessor;
+import com.tencent.matrix.resource.processor.SilenceAnalyseProcessor;
 import com.tencent.matrix.resource.watcher.RetryableTaskExecutor.RetryableTask;
 import com.tencent.matrix.util.MatrixHandlerThread;
 import com.tencent.matrix.util.MatrixLog;
 
-import org.json.JSONException;
-import org.json.JSONObject;
-
-import java.io.File;
-import java.lang.ref.WeakReference;
+import java.util.Collection;
 import java.util.Iterator;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.atomic.AtomicLong;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Created by tangyinsheng on 2017/6/2.
@@ -53,8 +49,8 @@ import java.util.concurrent.atomic.AtomicLong;
 public class ActivityRefWatcher extends FilePublisher implements Watcher {
     private static final String TAG = "Matrix.ActivityRefWatcher";
 
-    private static final int  CREATED_ACTIVITY_COUNT_THRESHOLD = 2;
-    private static final long FILE_CONFIG_EXPIRED_TIME         = 24 * 60 * 60 * 1000;
+    private static final int  CREATED_ACTIVITY_COUNT_THRESHOLD = 1;
+    private static final long FILE_CONFIG_EXPIRED_TIME_MILLIS  = TimeUnit.DAYS.toMillis(1);
 
     private static final String ACTIVITY_REFKEY_PREFIX = "MATRIX_RESCANARY_REFKEY_";
 
@@ -62,12 +58,17 @@ public class ActivityRefWatcher extends FilePublisher implements Watcher {
 
     private final RetryableTaskExecutor             mDetectExecutor;
     private final int                               mMaxRedetectTimes;
-    private final DumpStorageManager                mDumpStorageManager;
-    private final AndroidHeapDumper                 mHeapDumper;
-    private final AndroidHeapDumper.HeapDumpHandler mHeapDumpHandler;
+    private final long                              mBgScanTimes;
+    private final long                              mFgScanTimes;
+
+    private final HandlerThread                     mHandlerThread;
+    private final Handler                           mHandler;
 
     private final ConcurrentLinkedQueue<DestroyedActivityInfo> mDestroyedActivityInfos;
-    private final AtomicLong                                   mCurrentCreatedActivityCount;
+
+    private final BaseLeakProcessor mLeakProcessor;
+
+    private final ResourceConfig.DumpMode mDumpHprofMode;
 
     public static class ComponentFactory {
 
@@ -75,82 +76,75 @@ public class ActivityRefWatcher extends FilePublisher implements Watcher {
             return new RetryableTaskExecutor(config.getScanIntervalMillis(), handlerThread);
         }
 
-        protected DumpStorageManager createDumpStorageManager(Context context) {
-            return new DumpStorageManager(context);
+        protected BaseLeakProcessor createCustomLeakProcessor(ResourceConfig.DumpMode dumpMode, ActivityRefWatcher watcher) {
+            return null;
         }
 
-        protected AndroidHeapDumper createHeapDumper(Context context, DumpStorageManager dumpStorageManager) {
-            return new AndroidHeapDumper(context, dumpStorageManager);
-        }
+        private BaseLeakProcessor createLeakProcess(ResourceConfig.DumpMode dumpMode, ActivityRefWatcher watcher) {
+            BaseLeakProcessor leakProcessor = createCustomLeakProcessor(dumpMode, watcher);
+            if (leakProcessor != null) {
+                return leakProcessor;
+            }
 
-        protected AndroidHeapDumper.HeapDumpHandler createHeapDumpHandler(final Context context, ResourceConfig resourceConfig) {
-            return new AndroidHeapDumper.HeapDumpHandler() {
-                @Override
-                public void process(HeapDump result) {
-                    CanaryWorkerService.shrinkHprofAndReport(context, result);
-                }
-            };
+            switch (dumpMode) {
+                case AUTO_DUMP:
+                    return new AutoDumpProcessor(watcher);
+                case MANUAL_DUMP:
+                    return new ManualDumpProcessor(watcher, watcher.getResourcePlugin().getConfig().getTargetActivity());
+                case SILENCE_ANALYSE:
+                    return new SilenceAnalyseProcessor(watcher);
+                case NO_DUMP:
+                default:
+                    return new NoDumpProcessor(watcher);
+            }
         }
     }
 
     public ActivityRefWatcher(Application app,
                               final ResourcePlugin resourcePlugin) {
-        this(app, resourcePlugin, new ComponentFactory() {
-            @Override
-            protected DumpStorageManager createDumpStorageManager(Context context) {
-                if (resourcePlugin.getConfig().getDumpHprof()) {
-                    return super.createDumpStorageManager(context);
-                } else {
-                    return null;
-                }
-            }
-
-            @Override
-            protected AndroidHeapDumper createHeapDumper(Context context, DumpStorageManager dumpStorageManager) {
-                if (resourcePlugin.getConfig().getDumpHprof()) {
-                    return super.createHeapDumper(context, dumpStorageManager);
-                } else {
-                    return null;
-                }
-            }
-
-            @Override
-            protected AndroidHeapDumper.HeapDumpHandler createHeapDumpHandler(Context context, ResourceConfig resourceConfig) {
-                if (resourceConfig.getDumpHprof()) {
-                    return super.createHeapDumpHandler(context, resourceConfig);
-                } else {
-                    return null;
-                }
-            }
-        });
+        this(app, resourcePlugin, new ComponentFactory());
     }
 
     private ActivityRefWatcher(Application app,
                                ResourcePlugin resourcePlugin,
                                ComponentFactory componentFactory) {
-        super(app, FILE_CONFIG_EXPIRED_TIME, resourcePlugin.getTag(), resourcePlugin);
+        super(app, FILE_CONFIG_EXPIRED_TIME_MILLIS, resourcePlugin.getTag(), resourcePlugin);
         this.mResourcePlugin = resourcePlugin;
         final ResourceConfig config = resourcePlugin.getConfig();
-        final Context context = app;
-        HandlerThread handlerThread = MatrixHandlerThread.getDefaultHandlerThread();
-        mDetectExecutor = componentFactory.createDetectExecutor(config, handlerThread);
+        mHandlerThread = MatrixHandlerThread.getNewHandlerThread("matrix_res", Thread.NORM_PRIORITY); // avoid blocking default matrix thread
+        mHandler = new Handler(mHandlerThread.getLooper());
+        mDumpHprofMode = config.getDumpHprofMode();
+        mBgScanTimes = config.getBgScanIntervalMillis();
+        mFgScanTimes = config.getScanIntervalMillis();
+        mDetectExecutor = componentFactory.createDetectExecutor(config, mHandlerThread);
         mMaxRedetectTimes = config.getMaxRedetectTimes();
-        mDumpStorageManager = componentFactory.createDumpStorageManager(context);
-        mHeapDumper = componentFactory.createHeapDumper(context, mDumpStorageManager);
-        mHeapDumpHandler = componentFactory.createHeapDumpHandler(context, config);
+        mLeakProcessor = componentFactory.createLeakProcess(mDumpHprofMode, this);
         mDestroyedActivityInfos = new ConcurrentLinkedQueue<>();
-        mCurrentCreatedActivityCount = new AtomicLong(0);
+    }
+
+    public void onForeground(boolean isForeground) {
+        if (isForeground) {
+            MatrixLog.i(TAG, "we are in foreground, modify scan time[%sms].", mFgScanTimes);
+            mDetectExecutor.clearTasks();
+            mDetectExecutor.setDelayMillis(mFgScanTimes);
+            mDetectExecutor.executeInBackground(mScanDestroyedActivitiesTask);
+        } else {
+            MatrixLog.i(TAG, "we are in background, modify scan time[%sms].", mBgScanTimes);
+            mDetectExecutor.setDelayMillis(mBgScanTimes);
+        }
     }
 
     private final Application.ActivityLifecycleCallbacks mRemovedActivityMonitor = new ActivityLifeCycleCallbacksAdapter() {
-        @Override
-        public void onActivityCreated(Activity activity, Bundle savedInstanceState) {
-            mCurrentCreatedActivityCount.incrementAndGet();
-        }
 
         @Override
         public void onActivityDestroyed(Activity activity) {
             pushDestroyedActivityInfo(activity);
+            mHandler.postDelayed(new Runnable() {
+                @Override
+                public void run() {
+                    triggerGc();
+                }
+            }, 2000);
         }
     };
 
@@ -182,23 +176,31 @@ public class ActivityRefWatcher extends FilePublisher implements Watcher {
     @Override
     public void destroy() {
         mDetectExecutor.quit();
+        mHandlerThread.quitSafely();
+        mLeakProcessor.onDestroy();
         MatrixLog.i(TAG, "watcher is destroyed.");
     }
 
     private void pushDestroyedActivityInfo(Activity activity) {
         final String activityName = activity.getClass().getName();
-        if (isPublished(activityName)) {
-            MatrixLog.d(TAG, "activity leak with name %s had published, just ignore", activityName);
+        if ((mDumpHprofMode == ResourceConfig.DumpMode.NO_DUMP || mDumpHprofMode == ResourceConfig.DumpMode.AUTO_DUMP)
+                && !mResourcePlugin.getConfig().getDetectDebugger()
+                && isPublished(activityName)) {
+            MatrixLog.i(TAG, "activity leak with name %s had published, just ignore", activityName);
             return;
         }
         final UUID uuid = UUID.randomUUID();
         final StringBuilder keyBuilder = new StringBuilder();
         keyBuilder.append(ACTIVITY_REFKEY_PREFIX).append(activityName)
-            .append('_').append(Long.toHexString(uuid.getMostSignificantBits())).append(Long.toHexString(uuid.getLeastSignificantBits()));
+                .append('_').append(Long.toHexString(uuid.getMostSignificantBits())).append(Long.toHexString(uuid.getLeastSignificantBits()));
         final String key = keyBuilder.toString();
         final DestroyedActivityInfo destroyedActivityInfo
-            = new DestroyedActivityInfo(key, activity, activityName, mCurrentCreatedActivityCount.get());
+                = new DestroyedActivityInfo(key, activity, activityName);
         mDestroyedActivityInfos.add(destroyedActivityInfo);
+        synchronized (mDestroyedActivityInfos) {
+            mDestroyedActivityInfos.notifyAll();
+        }
+        MatrixLog.d(TAG, "mDestroyedActivityInfos add %s", activityName);
     }
 
     private void scheduleDetectProcedure() {
@@ -208,40 +210,54 @@ public class ActivityRefWatcher extends FilePublisher implements Watcher {
     private void unscheduleDetectProcedure() {
         mDetectExecutor.clearTasks();
         mDestroyedActivityInfos.clear();
-        mCurrentCreatedActivityCount.set(0);
     }
 
     private final RetryableTask mScanDestroyedActivitiesTask = new RetryableTask() {
 
         @Override
         public Status execute() {
+            // If destroyed activity list is empty, just wait to save power.
+            if (mDestroyedActivityInfos.isEmpty()) {
+                MatrixLog.i(TAG, "DestroyedActivityInfo is empty! wait...");
+                synchronized (mDestroyedActivityInfos) {
+                    try {
+                        mDestroyedActivityInfos.wait();
+                    } catch (Throwable ignored) {
+                        // Ignored.
+                    }
+                }
+                MatrixLog.i(TAG, "DestroyedActivityInfo is NOT empty! resume check");
+                return Status.RETRY;
+            }
+
             // Fake leaks will be generated when debugger is attached.
             if (Debug.isDebuggerConnected() && !mResourcePlugin.getConfig().getDetectDebugger()) {
                 MatrixLog.w(TAG, "debugger is connected, to avoid fake result, detection was delayed.");
                 return Status.RETRY;
             }
 
-            if (mDestroyedActivityInfos.isEmpty()) {
-                return Status.RETRY;
-            }
-
-            final WeakReference<Object> sentinelRef = new WeakReference<>(new Object());
+//            final WeakReference<Object[]> sentinelRef = new WeakReference<>(new Object[1024 * 1024]); // alloc big object
             triggerGc();
-            if (sentinelRef.get() != null) {
-                // System ignored our gc request, we will retry later.
-                MatrixLog.d(TAG, "system ignore our gc request, wait for next detection.");
-                return Status.RETRY;
-            }
+            triggerGc();
+            triggerGc();
+//            if (sentinelRef.get() != null) {
+//                // System ignored our gc request, we will retry later.
+//                MatrixLog.d(TAG, "system ignore our gc request, wait for next detection.");
+//                return Status.RETRY;
+//            }
 
             final Iterator<DestroyedActivityInfo> infoIt = mDestroyedActivityInfos.iterator();
 
             while (infoIt.hasNext()) {
                 final DestroyedActivityInfo destroyedActivityInfo = infoIt.next();
-                if (isPublished(destroyedActivityInfo.mActivityName)) {
+                if ((mDumpHprofMode == ResourceConfig.DumpMode.NO_DUMP || mDumpHprofMode == ResourceConfig.DumpMode.AUTO_DUMP)
+                        && !mResourcePlugin.getConfig().getDetectDebugger()
+                        && isPublished(destroyedActivityInfo.mActivityName)) {
                     MatrixLog.v(TAG, "activity with key [%s] was already published.", destroyedActivityInfo.mActivityName);
                     infoIt.remove();
                     continue;
                 }
+                triggerGc();
                 if (destroyedActivityInfo.mActivityRef.get() == null) {
                     // The activity was recycled by a gc triggered outside.
                     MatrixLog.v(TAG, "activity with key [%s] was already recycled.", destroyedActivityInfo.mKey);
@@ -251,53 +267,55 @@ public class ActivityRefWatcher extends FilePublisher implements Watcher {
 
                 ++destroyedActivityInfo.mDetectedCount;
 
-                long createdActivityCountFromDestroy = mCurrentCreatedActivityCount.get() - destroyedActivityInfo.mLastCreatedActivityCount;
                 if (destroyedActivityInfo.mDetectedCount < mMaxRedetectTimes
-                    || (createdActivityCountFromDestroy < CREATED_ACTIVITY_COUNT_THRESHOLD && !mResourcePlugin.getConfig().getDetectDebugger())) {
+                        && !mResourcePlugin.getConfig().getDetectDebugger()) {
                     // Although the sentinel tell us the activity should have been recycled,
                     // system may still ignore it, so try again until we reach max retry times.
-                    MatrixLog.i(TAG, "activity with key [%s] should be recycled but actually still \n"
-                            + "exists in %s times detection with %s created activities during destroy, wait for next detection to confirm.",
-                        destroyedActivityInfo.mKey, destroyedActivityInfo.mDetectedCount, createdActivityCountFromDestroy);
+                    MatrixLog.i(TAG, "activity with key [%s] should be recycled but actually still exists in %s times, wait for next detection to confirm.",
+                            destroyedActivityInfo.mKey, destroyedActivityInfo.mDetectedCount);
+
+                    triggerGc();
                     continue;
                 }
 
-                MatrixLog.i(TAG, "activity with key [%s] was suspected to be a leaked instance.", destroyedActivityInfo.mKey);
-                if (mHeapDumper != null) {
-                    final File hprofFile = mHeapDumper.dumpHeap();
-                    if (hprofFile != null) {
-                        markPublished(destroyedActivityInfo.mActivityName);
-                        final HeapDump heapDump = new HeapDump(hprofFile, destroyedActivityInfo.mKey, destroyedActivityInfo.mActivityName);
-                        mHeapDumpHandler.process(heapDump);
-                        infoIt.remove();
-                    } else {
-                        MatrixLog.i(TAG, "heap dump for further analyzing activity with key [%s] was failed, just ignore.",
-                                destroyedActivityInfo.mKey);
-                        infoIt.remove();
-                    }
-                } else {
-                    // Lightweight mode, just report leaked activity name.
-                    MatrixLog.i(TAG, "lightweight mode, just report leaked activity name.");
-                    markPublished(destroyedActivityInfo.mActivityName);
-                    if (mResourcePlugin != null) {
-                        final JSONObject resultJson = new JSONObject();
-                        try {
-                            resultJson.put(SharePluginInfo.ISSUE_ACTIVITY_NAME, destroyedActivityInfo.mActivityName);
-                        } catch (JSONException e) {
-                            MatrixLog.printErrStackTrace(TAG, e, "unexpected exception.");
-                        }
-                        mResourcePlugin.onDetectIssue(new Issue(resultJson));
-                    }
+                MatrixLog.i(TAG, "activity with key [%s] was suspected to be a leaked instance. mode[%s]", destroyedActivityInfo.mKey, mDumpHprofMode);
+
+                if (mLeakProcessor == null) {
+                    throw new NullPointerException("LeakProcessor not found!!!");
+                }
+
+                triggerGc();
+                if (mLeakProcessor.process(destroyedActivityInfo)) {
+                    MatrixLog.i(TAG, "the leaked activity [%s] with key [%s] has been processed. stop polling", destroyedActivityInfo.mActivityName, destroyedActivityInfo.mKey);
+                    infoIt.remove();
                 }
             }
 
+            triggerGc();
             return Status.RETRY;
         }
     };
 
-    private void triggerGc() {
+    public BaseLeakProcessor getLeakProcessor() {
+        return mLeakProcessor;
+    }
+
+    public ResourcePlugin getResourcePlugin() {
+        return mResourcePlugin;
+    }
+
+    public Collection<DestroyedActivityInfo> getDestroyedActivityInfos() {
+        return mDestroyedActivityInfos;
+    }
+
+    public void triggerGc() {
         MatrixLog.v(TAG, "triggering gc...");
         Runtime.getRuntime().gc();
+        try {
+            Thread.sleep(100);
+        } catch (InterruptedException e) {
+            MatrixLog.printErrStackTrace(TAG, e, "");
+        }
         Runtime.getRuntime().runFinalization();
         MatrixLog.v(TAG, "gc was triggered.");
     }

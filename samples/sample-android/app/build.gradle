@@ -1,12 +1,28 @@
+apply plugin: 'com.google.osdetector'
+
+ext.removeUnusedResourcesV2Enable = true
+
+import com.google.gson.Gson
+import com.google.gson.JsonArray
+
+import com.tencent.matrix.plugin.compat.AgpCompat
+
 apply plugin: 'com.android.application'
 
+configurations.all {
+    // check for updates every build
+    resolutionStrategy.cacheChangingModulesFor 0, 'seconds'
+}
 
 android {
-    compileSdkVersion 24
-    buildToolsVersion "27.0.3"
+    compileSdkVersion 29
+    buildToolsVersion "29.0.3"
 
     signingConfigs {
         debug {
+            storeFile file("./keystore/debug.keystore")
+        }
+        release {
             storeFile file("./keystore/debug.keystore")
         }
     }
@@ -14,7 +30,7 @@ android {
     defaultConfig {
         applicationId "sample.tencent.matrix"
         minSdkVersion 19
-        targetSdkVersion 23
+        targetSdkVersion 29
         versionCode 1
         versionName "1.0"
         testInstrumentationRunner "android.support.test.runner.AndroidJUnitRunner"
@@ -36,34 +52,110 @@ android {
             signingConfig signingConfigs.debug
         }
     }
+
+    if (!removeUnusedResourcesV2Enable) {
+        applicationVariants.all { variant ->
+            if (variant.name.equalsIgnoreCase("debug")) {
+                packageDebug.doLast {
+                    ProcessBuilder processBuilder = new ProcessBuilder();
+                    println configurations.apkCheckerDependency.getAt(0).getAbsolutePath()
+                    processBuilder.command("java",
+                            "-jar", configurations.apkCheckerDependency.getAt(0).getAbsolutePath(),
+                            "--apk", variant.outputs.first().outputFile.getAbsolutePath(),
+                            "--output", project.getProjectDir().getAbsolutePath() + "/unused_resources",
+                            "--format", "json",
+                            "-unusedResources", "--rTxt", project.getBuildDir().getAbsolutePath() + "/intermediates/${AgpCompat.getIntermediatesSymbolDirName.invoke()}/${variant.name}/R.txt");
+                    Process process = processBuilder.start();
+                    process.waitFor()
+                    println process.inputStream.text
+                    println process.errorStream.text
+                    File outputFile = new File(project.getProjectDir().getAbsolutePath() + "/unused_resources.json");
+                    if (outputFile.exists()) {
+                        Gson gson = new Gson();
+                        JsonArray jsonArray = gson.fromJson(outputFile.text, JsonArray.class);
+                        for (int i = 0; i < jsonArray.size(); i++) {
+                            if (jsonArray.get(i).asJsonObject.get("taskType").asInt == 12) {
+                                JsonArray resList = jsonArray.get(i).asJsonObject.get("unused-resources").asJsonArray;
+                                for (int j = 0; j < resList.size(); j++) {
+                                    project.ext.unusedResourcesSet.add(resList.get(j).asString);
+                                }
+                                println "find unused resources:\n" + unusedResourcesSet
+                                break;
+                            }
+                        }
+                        outputFile.delete();
+                    }
+                }
+            }
+        }
+    }
+
 }
 
+configurations {
+    apkCheckerDependency
+    sevenZipDependency
+}
 
-dependencies {
-    compile fileTree(dir: 'libs', include: ['*.jar'])
-    compile group: "com.tencent.matrix", name: "matrix-android-lib", version: MATRIX_VERSION, changing: true
-    compile group: "com.tencent.matrix", name: "matrix-android-commons", version: MATRIX_VERSION, changing: true
-    compile group: "com.tencent.matrix", name: "matrix-trace-canary", version: MATRIX_VERSION, changing: true
-    compile group: "com.tencent.matrix", name: "matrix-resource-canary-android", version: MATRIX_VERSION, changing: true
-    compile group: "com.tencent.matrix", name: "matrix-resource-canary-common", version: MATRIX_VERSION, changing: true
-    compile group: "com.tencent.matrix", name: "matrix-io-canary", version: MATRIX_VERSION, changing: true
-    compile group: "com.tencent.matrix", name: "matrix-sqlite-lint-android-sdk", version: MATRIX_VERSION, changing: true
-    releaseCompile group: "com.tencent.matrix", name: "matrix-sqlite-lint-android-sdk-no-op", version: MATRIX_VERSION, changing: true
+if (useLocalMaven()) {
+    apply from: project.file('dependencies-src.gradle')
+} else {
+    apply from: project.file('dependencies-aar.gradle')
+}
 
-    compile 'com.android.support:appcompat-v7:24.0.0'
-    compile 'com.android.support:recyclerview-v7:24.0.0'
-
-    testCompile 'junit:junit:4.12'
-    androidTestCompile('com.android.support.test.espresso:espresso-core:2.2.2', {
-        exclude group: 'com.android.support', module: 'support-annotations'
-    })
+if (!removeUnusedResourcesV2Enable) {
+    project.ext.unusedResourcesSet = new HashSet<String>()
 }
 
 apply plugin: 'com.tencent.matrix-plugin'
 matrix {
+
+    logLevel "D"
+
     trace {
         enable = true
-        baseMethodMapFile = "${project.buildDir}/matrix_output/Debug.methodmap"
+        baseMethodMapFile = "${project.projectDir}/matrixTrace/methodMapping.txt"
         blackListFile = "${project.projectDir}/matrixTrace/blackMethodList.txt"
+    }
+    removeUnusedResources {
+        variant = "debug"
+
+        v2 = removeUnusedResourcesV2Enable
+
+        if (!v2) {
+            unusedResources = project.ext.unusedResourcesSet
+        }
+
+        enable true
+        needSign true
+        shrinkArsc true
+        shrinkDuplicates true
+        use7zip = true
+        zipAlign = true
+        embedResGuard true
+
+        apkCheckerPath = "${project.configurations.apkCheckerDependency.resolve().find { it.name.startsWith("matrix-apk-canary") }.getAbsolutePath()}"
+        sevenZipPath = "${project.configurations.sevenZipDependency.resolve().getAt(0).getAbsolutePath()}"
+        //Notice: You need to modify the  value of $apksignerPath on different platform. the value below only suitable for Mac Platform,
+        //if on Windows, you may have to  replace apksigner with apksigner.bat.
+        apksignerPath = "${android.getSdkDirectory().getAbsolutePath()}/build-tools/${android.getBuildToolsVersion()}/apksigner"
+        zipAlignPath = "${android.getSdkDirectory().getAbsolutePath()}/build-tools/${android.getBuildToolsVersion()}/zipalign"
+        ignoreResources = ["R.id.*", "R.bool.*", "R.layout.unused_layout"]
+    }
+}
+
+project.tasks.whenTaskAdded {
+    if (it.name?.equals("assembleDebug") || it.name?.equals("assembleRelease")) {
+        it.dependsOn "cleanBuildDirTask".with { taskName ->
+            if (tasks.findByName(taskName)) {
+                return tasks.findByName(taskName)
+            }
+            return task(taskName) {
+                doFirst {
+                    logger.lifecycle "Clean app bulid dir before assemble"
+                    project.file(project.buildDir).deleteDir()
+                }
+            }
+        }
     }
 }
